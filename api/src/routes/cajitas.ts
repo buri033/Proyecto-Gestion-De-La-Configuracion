@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { randomUUID } from 'node:crypto';
-import { supabase } from '../repos/supabase';
+import { query } from '../repos/db';
 import { requireAuth } from '../middleware';
 import { asegurarPerfil } from './cuentas';
 
@@ -9,14 +9,14 @@ const router = Router();
 /** Mis cajitas (SAVINGS_GOAL). */
 router.get('/', requireAuth, async (req, res, next) => {
   try {
-    const { data, error } = await supabase
-      .from('account_balances')
-      .select('account_id, account_number, type, balance, available, label, goal_amount')
-      .eq('user_id', req.userId)
-      .eq('type', 'SAVINGS_GOAL');
+    const cajitasRes = await query(
+      `SELECT account_id, account_number, type, balance, available, label, goal_amount 
+       FROM account_balances 
+       WHERE user_id = $1 AND type = 'SAVINGS_GOAL';`,
+      [req.userId]
+    );
 
-    if (error) throw error;
-    res.json(data ?? []);
+    res.json(cajitasRes.rows ?? []);
   } catch (e) {
     next(e);
   }
@@ -43,20 +43,17 @@ router.post('/', requireAuth, async (req, res, next) => {
     // Generar un numero de cuenta unico para la cajita
     const numCuenta = 'CJ-' + Math.floor(10000000 + Math.random() * 90000000).toString();
 
-    const { data, error } = await supabase
-      .from('accounts')
-      .insert({
-        user_id: req.userId,
-        account_number: numCuenta,
-        type: 'SAVINGS_GOAL',
-        label: nombre,
-        goal_amount: meta ?? null,
-      })
-      .select('id')
-      .single();
+    const cajitaRes = await query<{ id: string }>(
+      `INSERT INTO accounts (user_id, account_number, type, label, goal_amount) 
+       VALUES ($1, $2, 'SAVINGS_GOAL', $3, $4) 
+       RETURNING id;`,
+      [req.userId, numCuenta, nombre, meta ?? null]
+    );
 
-    if (error) throw error;
-    res.status(201).json({ cajitaId: data.id });
+    const cajitaId = cajitaRes.rows[0]?.id;
+    if (!cajitaId) throw new Error('No se pudo crear la cajita');
+
+    res.status(201).json({ cajitaId });
   } catch (e) {
     next(e);
   }
@@ -76,17 +73,19 @@ router.post('/mover', requireAuth, async (req, res, next) => {
       return;
     }
 
-    const { data, error } = await supabase.rpc('transfer_money', {
-      p_from_account: origen,
-      p_to_account:   destino,
-      p_amount:       monto,
-      p_description:  'Movimiento a cajita de ahorro',
-      p_idem_key:     randomUUID(),
-      p_type:         'GOAL_MOVE',
-    });
+    const rpcRes = await query<{ transfer_money: string }>(
+      `SELECT transfer_money($1, $2, $3, $4, $5, $6);`,
+      [
+        origen,
+        destino,
+        monto,
+        'Movimiento a cajita de ahorro',
+        randomUUID(),
+        'GOAL_MOVE',
+      ]
+    );
 
-    if (error) throw error;
-    res.json({ transaccionId: data });
+    res.json({ transaccionId: rpcRes.rows[0]?.transfer_money });
   } catch (e) {
     next(e);
   }

@@ -2,6 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import 'dotenv/config';
 
+import { initDb } from './repos/db';
+import auth from './routes/auth';
 import cuentas from './routes/cuentas';
 import transferencias from './routes/transferencias';
 import creditos from './routes/creditos';
@@ -17,9 +19,9 @@ app.use(express.json());
 
 app.get('/', (_req, res) => {
   res.json({
-    mensaje: 'Bienvenido a Banco MVP API',
+    mensaje: 'Bienvenido a Banco MVP API (Base de Datos Local)',
     salud: '/health',
-    rutas: ['/health', '/cuentas', '/transferencias', '/creditos', '/tarjetas', '/notificaciones', '/cajitas', '/prestamos'],
+    rutas: ['/health', '/auth', '/cuentas', '/transferencias', '/creditos', '/tarjetas', '/notificaciones', '/cajitas', '/prestamos'],
   });
 });
 
@@ -27,6 +29,7 @@ app.get('/health', (_req, res) => {
   res.json({ ok: true, servicio: 'banco-api', fecha: new Date().toISOString() });
 });
 
+app.use('/auth', auth);
 app.use('/cuentas', cuentas);
 app.use('/transferencias', transferencias);
 app.use('/creditos', creditos);
@@ -66,7 +69,13 @@ app.use(
 
 const PORT = Number(process.env['PORT'] ?? 3000);
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`API corriendo en http://localhost:${PORT}`);
-  console.log(`Desde el celular usa la IP de tu PC, no localhost`);
-});
+initDb()
+  .then(() => {
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`API corriendo en http://localhost:${PORT}`);
+      console.log(`Desde el celular usa la IP de tu PC, no localhost`);
+    });
+  })
+  .catch((err) => {
+    console.error('Error al inicializar la base de datos local:', err);
+  });

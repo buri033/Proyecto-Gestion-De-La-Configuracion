@@ -51,3 +51,5 @@ Desktop.ini
 # Temporary & Cache
 .cache/
 .tmp/
+db_data/
+

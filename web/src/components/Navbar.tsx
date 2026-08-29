@@ -1,6 +1,6 @@
 import React from 'react';
-import { Bell, LogOut, ShieldCheck, User } from 'lucide-react';
-import { supabase } from '../lib/supabase';
+import { Bell, LogOut, ShieldCheck } from 'lucide-react';
+import { api } from '../lib/api';
 
 interface NavbarProps {
   userName?: string;
@@ -15,8 +15,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   onNavigate,
   activeView,
 }) => {
-  const handleLogout = async () => {
-    await supabase.auth.signOut();
+  const handleLogout = () => {
+    api.logout();
   };
 
   return (

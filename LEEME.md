@@ -1,37 +1,26 @@
-# Banco MVP — Plataforma Web & API Backend
+# Banco MVP — Plataforma Web & API Backend (Base de Datos Local)
 
 ## 🚀 Guía Rápida
 
-### Paso 1: Base de Datos en Supabase
-
-1. Ingresa a [supabase.com](https://supabase.com) y crea un nuevo proyecto `banco-mvp`.
-2. En el **SQL Editor → New query**, ejecuta los scripts de la carpeta `db/` en este orden estricto:
-   - `1` → `db/01_schema.sql`
-   - `2` → `db/02_functions.sql`
-   - `3` → `db/04_seed.sql`
-3. Copia tus claves en **Settings → API**: Project URL, `anon` key y `service_role` key.
-4. *(Opcional)* En el SQL Editor verifica corriendo `select verificar_cuadre();` (debe devolver `0`).
-
----
-
-### Paso 2: Iniciar el Backend API
+### Paso 1: Iniciar el Backend API (Base de Datos Local Cero-Configuración)
 
 Abre una terminal en la raíz de tu proyecto:
 
 ```powershell
 cd api
 npm install
-copy .env.example .env
 npm test
 npm run typecheck
 npm run dev
 ```
 
-El backend estará corriendo en `http://localhost:3000`.
+El backend se iniciará en `http://localhost:3000`. Al arrancar por primera vez, creará e inicializará automáticamente la base de datos local embebida (`PGlite`) ejecutando los esquemas, tablas, tipos y funciones bancarias almacenadas en `db/`.
+
+*(Opcional)* Si prefieres utilizar un servidor PostgreSQL local ya existente en tu equipo, puedes crear un archivo `.env` en `api/` definiendo `DATABASE_URL=postgresql://usuario:password@localhost:5432/nombre_bd`.
 
 ---
 
-### Paso 3: Iniciar la Aplicación Web
+### Paso 2: Iniciar la Aplicación Web
 
 Abre una segunda terminal:
 
@@ -50,15 +39,15 @@ La aplicación web se abrirá en `http://localhost:5173`.
 
 ```
 banco-mvp/
-├── db/                    Scripts SQL para Supabase (Schema, Funciones, Seed)
-├── api/                   Backend Node.js + Express + TypeScript
+├── db/                    Scripts SQL de estructura bancaria (Schema, Funciones, Seed)
+├── api/                   Backend Node.js + Express + TypeScript + BD Local (PGlite/PostgreSQL)
 │   ├── tsconfig.json
 │   ├── src/
-│   │   ├── index.ts       Punto de entrada del servidor API
-│   │   ├── middleware.ts  Validación de tokens de sesión
+│   │   ├── index.ts       Punto de entrada del servidor API e inicializador de BD
+│   │   ├── middleware.ts  Validación de tokens de sesión JWT
 │   │   ├── domain/        ← Lógica pura de dominio (sin BD ni HTTP)
-│   │   ├── routes/        Rutas HTTP (Express)
-│   │   └── repos/         Clientes e integración con Supabase
+│   │   ├── routes/        Rutas HTTP (Express) e integración local
+│   │   └── repos/         Manejador de base de datos local (db.ts)
 │   └── tests/             Suite de 33 pruebas unitarias de dominio
 └── web/                   Aplicación Web React 18 + Vite 6 + TypeScript
     ├── index.html         Estructura base HTML5 y fuentes Google
@@ -68,7 +57,7 @@ banco-mvp/
         ├── index.css      Sistema de diseño Glassmorphic & Dark Mode
         ├── App.tsx        Navegación principal y autenticación
         ├── components/    Componentes UI (Dashboard, Transferencias, Tarjetas, Créditos, etc.)
-        └── lib/           Cliente API y Supabase
+        └── lib/           Cliente API y gestión de sesiones locales (auth.ts)
 ```
 
 ### La Carpeta Domain (Lógica de Dominio en Backend)
@@ -108,6 +97,4 @@ npm run build      # Generar paquete de producción en web/dist
 | Síntoma | Causa casi siempre | Solución |
 |---|---|---|
 | `Network request failed` en la web | El servidor `api` no está corriendo | Asegúrate de haber ejecutado `npm run dev` dentro de `api/` |
-| `Faltan variables en el archivo .env` | No copiaste `.env.example` a `.env` en `api/` | Copia `.env.example` a `.env` y coloca las claves de Supabase |
-| `relation "profiles" does not exist` | Corriste `02_functions.sql` antes que `01_schema.sql` | Ejecuta los scripts en el orden numérico indicado (`01` -> `02`) |
 | `listen EADDRINUSE :::3000` | El puerto 3000 ya está ocupado | Cierra el proceso anterior o finaliza Node en el Administrador de tareas |

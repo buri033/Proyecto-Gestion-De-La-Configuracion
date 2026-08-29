@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { supabase } from '../lib/supabase';
+import { api } from '../lib/api';
 import { ShieldCheck, LogIn, Lock, Mail, ArrowRight } from 'lucide-react';
 
 interface LoginViewProps {
@@ -17,21 +17,17 @@ export const LoginView: React.FC<LoginViewProps> = ({ onSwitchToRegister }) => {
     setLoading(true);
     setError(null);
 
-    const { error: err } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-
-    if (err) {
+    try {
+      await api.login(email, password);
+    } catch (err: any) {
       if (err.message.includes('fetch') || err.message.includes('Failed')) {
-        setError('No se pudo conectar con Supabase. Revisa que VITE_SUPABASE_URL en web/.env sea la URL real de tu proyecto en supabase.com');
-      } else if (err.message === 'Invalid login credentials') {
-        setError('Credenciales incorrectas. Revisa tu correo y contraseña.');
+        setError('No se pudo conectar con el servidor API local. Revisa que el backend (api) esté corriendo en http://localhost:3000');
       } else {
         setError(err.message);
       }
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   return (

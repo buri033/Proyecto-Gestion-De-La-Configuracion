@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { supabase } from '../repos/supabase';
+import { query } from '../repos/db';
 import { requireAuth } from '../middleware';
 
 const router = Router();
@@ -7,15 +7,16 @@ const router = Router();
 /** Lista de notificaciones del usuario, mas recientes primero. */
 router.get('/', requireAuth, async (req, res, next) => {
   try {
-    const { data, error } = await supabase
-      .from('notifications')
-      .select('id, title, body, read_at, created_at')
-      .eq('user_id', req.userId)
-      .order('created_at', { ascending: false })
-      .limit(50);
+    const notifsRes = await query(
+      `SELECT id, title, body, read_at, created_at 
+       FROM notifications 
+       WHERE user_id = $1 
+       ORDER BY created_at DESC 
+       LIMIT 50;`,
+      [req.userId]
+    );
 
-    if (error) throw error;
-    res.json(data ?? []);
+    res.json(notifsRes.rows ?? []);
   } catch (e) {
     next(e);
   }
@@ -24,13 +25,11 @@ router.get('/', requireAuth, async (req, res, next) => {
 /** Marcar una notificacion como leida. */
 router.patch('/:id/leida', requireAuth, async (req, res, next) => {
   try {
-    const { error } = await supabase
-      .from('notifications')
-      .update({ read_at: new Date().toISOString() })
-      .eq('id', req.params.id)
-      .eq('user_id', req.userId);
+    await query(
+      `UPDATE notifications SET read_at = NOW() WHERE id = $1 AND user_id = $2;`,
+      [req.params.id, req.userId]
+    );
 
-    if (error) throw error;
     res.json({ ok: true });
   } catch (e) {
     next(e);
@@ -40,13 +39,11 @@ router.patch('/:id/leida', requireAuth, async (req, res, next) => {
 /** Marcar todas las notificaciones como leidas. */
 router.patch('/todas/leidas', requireAuth, async (req, res, next) => {
   try {
-    const { error } = await supabase
-      .from('notifications')
-      .update({ read_at: new Date().toISOString() })
-      .eq('user_id', req.userId)
-      .is('read_at', null);
+    await query(
+      `UPDATE notifications SET read_at = NOW() WHERE user_id = $1 AND read_at IS NULL;`,
+      [req.userId]
+    );
 
-    if (error) throw error;
     res.json({ ok: true });
   } catch (e) {
     next(e);

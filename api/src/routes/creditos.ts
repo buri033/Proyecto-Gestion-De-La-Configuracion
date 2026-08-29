@@ -1,10 +1,9 @@
 import { Router } from 'express';
 import { Dinero } from '../domain/Dinero';
-import { anualAMensual, calcularCuota, resumenCredito } from '../domain/amortizacion';
-import { evaluarSolicitud } from '../domain/scoring';
+import { anualAMensual, resumenCredito } from '../domain/amortizacion';
 import { requireAuth } from '../middleware';
-import { supabase } from '../repos/supabase';
-import type { ParametrosCredito, Solicitud } from '../domain/tipos';
+import { query } from '../repos/db';
+import type { ParametrosCredito } from '../domain/tipos';
 
 const router = Router();
 
@@ -13,33 +12,35 @@ const TASA_BASE_ANUAL = 0.24;
 /** Listar creditos */
 router.get('/', requireAuth, async (req, res, next) => {
   try {
-    const { data: cuentas, error: errCuentas } = await supabase
-      .from('accounts')
-      .select('id')
-      .eq('user_id', req.userId)
-      .eq('type', 'LOAN');
+    const cuentasRes = await query<{ id: string }>(
+      `SELECT id FROM accounts WHERE user_id = $1 AND type = 'LOAN';`,
+      [req.userId]
+    );
 
-    if (errCuentas) throw errCuentas;
+    const cuentas = cuentasRes.rows;
     if (!cuentas || cuentas.length === 0) { res.json([]); return; }
 
-    const cuentaIds = cuentas.map((c: { id: string }) => c.id);
+    const cuentaIds = cuentas.map((c) => c.id);
 
-    const { data: loans, error } = await supabase
-      .from('loans')
-      .select('id, principal, rate_monthly, term_months, installment, status, disbursed_at, account_id')
-      .in('account_id', cuentaIds)
-      .order('disbursed_at', { ascending: false });
+    const loansRes = await query<Record<string, any>>(
+      `SELECT id, principal, rate_monthly, term_months, installment, status, disbursed_at, account_id 
+       FROM loans 
+       WHERE account_id = ANY($1) 
+       ORDER BY disbursed_at DESC;`,
+      [cuentaIds]
+    );
 
-    if (error) throw error;
+    const loans = loansRes.rows;
 
-    const resultado = await Promise.all((loans ?? []).map(async (loan: Record<string, unknown>) => {
-      const { data: cuotas } = await supabase
-        .from('installments')
-        .select('amount, status')
-        .eq('loan_id', loan['id']);
+    const resultado = await Promise.all((loans ?? []).map(async (loan) => {
+      const cuotasRes = await query<{ amount: number; status: string }>(
+        `SELECT amount, status FROM installments WHERE loan_id = $1;`,
+        [loan['id']]
+      );
 
-      const pendientes = (cuotas ?? []).filter((c: { status: string }) => c.status !== 'PAID');
-      const saldo = pendientes.reduce((s: number, c: { amount: number }) => s + Number(c.amount), 0);
+      const cuotas = cuotasRes.rows;
+      const pendientes = (cuotas ?? []).filter((c) => c.status !== 'PAID');
+      const saldo = pendientes.reduce((s, c) => s + Number(c.amount), 0);
 
       return {
         id:                loan['id'],
@@ -62,14 +63,15 @@ router.get('/', requireAuth, async (req, res, next) => {
 /** Cuotas de un credito */
 router.get('/:id/cuotas', requireAuth, async (req, res, next) => {
   try {
-    const { data, error } = await supabase
-      .from('installments')
-      .select('id, number, due_date, amount, principal_part, interest_part, status, paid_at')
-      .eq('loan_id', req.params.id)
-      .order('number');
+    const resCuotas = await query<Record<string, any>>(
+      `SELECT id, number, due_date, amount, principal_part, interest_part, status, paid_at 
+       FROM installments 
+       WHERE loan_id = $1 
+       ORDER BY number;`,
+      [req.params.id]
+    );
 
-    if (error) throw error;
-    const cuotas = (data ?? []).map((c: Record<string, unknown>) => ({ ...c, installment_number: c['number'] }));
+    const cuotas = (resCuotas.rows ?? []).map((c) => ({ ...c, installment_number: c['number'] }));
     res.json(cuotas);
   } catch (e) {
     next(e);
@@ -79,22 +81,20 @@ router.get('/:id/cuotas', requireAuth, async (req, res, next) => {
 /** Pagar una cuota */
 router.post('/:prestamoId/cuotas/:cuotaId/pagar', requireAuth, async (req, res, next) => {
   try {
-    const { data: cuota, error: errCuota } = await supabase
-      .from('installments')
-      .select('id, status, amount')
-      .eq('id', req.params.cuotaId)
-      .eq('loan_id', req.params.prestamoId)
-      .single();
+    const cuotaRes = await query<{ id: string; status: string; amount: number }>(
+      `SELECT id, status, amount FROM installments WHERE id = $1 AND loan_id = $2;`,
+      [req.params.cuotaId, req.params.prestamoId]
+    );
 
-    if (errCuota || !cuota) { res.status(404).json({ error: 'Cuota no encontrada' }); return; }
-    if ((cuota as { status: string }).status === 'PAID') { res.status(400).json({ error: 'Cuota ya pagada' }); return; }
+    const cuota = cuotaRes.rows[0];
+    if (!cuota) { res.status(404).json({ error: 'Cuota no encontrada' }); return; }
+    if (cuota.status === 'PAID') { res.status(400).json({ error: 'Cuota ya pagada' }); return; }
 
-    const { error } = await supabase
-      .from('installments')
-      .update({ status: 'PAID', paid_at: new Date().toISOString() })
-      .eq('id', (cuota as { id: string }).id);
+    await query(
+      `UPDATE installments SET status = 'PAID', paid_at = NOW() WHERE id = $1;`,
+      [cuota.id]
+    );
 
-    if (error) throw error;
     res.json({ ok: true });
   } catch (e) {
     next(e);
@@ -117,22 +117,19 @@ router.post('/solicitar', requireAuth, async (req, res, next) => {
     const cuotaMensual = Math.round((m * tasaMensual * Math.pow(1 + tasaMensual, p)) / (Math.pow(1 + tasaMensual, p) - 1));
 
     // 1. Obtener cualquier cuenta activa del usuario para abonar el dinero
-    const { data: cuentas } = await supabase
-      .from('accounts')
-      .select('id')
-      .eq('user_id', req.userId)
-      .in('type', ['CHECKING', 'SAVINGS']);
+    const cuentasRes = await query<{ id: string }>(
+      `SELECT id FROM accounts WHERE user_id = $1 AND type IN ('CHECKING', 'SAVINGS');`,
+      [req.userId]
+    );
 
-    let cuentaId: string | null = cuentas && cuentas.length > 0 && cuentas[0] ? (cuentas[0] as { id: string }).id : null;
+    let cuentaId: string | null = cuentasRes.rows[0]?.id ?? null;
 
     if (!cuentaId) {
-      const { data: cualquierCuenta } = await supabase
-        .from('accounts')
-        .select('id')
-        .eq('user_id', req.userId)
-        .neq('type', 'SYSTEM')
-        .limit(1);
-      cuentaId = cualquierCuenta && cualquierCuenta.length > 0 && cualquierCuenta[0] ? (cualquierCuenta[0] as { id: string }).id : null;
+      const cualquierRes = await query<{ id: string }>(
+        `SELECT id FROM accounts WHERE user_id = $1 AND type <> 'SYSTEM' LIMIT 1;`,
+        [req.userId]
+      );
+      cuentaId = cualquierRes.rows[0]?.id ?? null;
     }
 
     if (!cuentaId) {
@@ -141,79 +138,61 @@ router.post('/solicitar', requireAuth, async (req, res, next) => {
     }
 
     // 2. Crear solicitud de credito
-    const { data: app, error: errApp } = await supabase
-      .from('credit_applications')
-      .insert({
-        user_id: req.userId,
-        product: 'LOAN',
-        requested_amount: m,
-        term_months: p,
-        monthly_income: 3000000,
-        status: 'ACCEPTED',
-        approved_amount: m,
-        approved_rate: tasaMensual,
-      })
-      .select('id')
-      .single();
+    const appRes = await query<{ id: string }>(
+      `INSERT INTO credit_applications 
+       (user_id, product, requested_amount, term_months, monthly_income, status, approved_amount, approved_rate) 
+       VALUES ($1, 'LOAN', $2, $3, 3000000, 'ACCEPTED', $2, $4) 
+       RETURNING id;`,
+      [req.userId, m, p, tasaMensual]
+    );
 
-    if (errApp) throw errApp;
+    const appId = appRes.rows[0]?.id;
+    if (!appId) throw new Error('Error al registrar la solicitud de crédito');
 
     // 3. Crear cuenta tipo LOAN
     const numCuenta = 'LN-' + Math.floor(10000000 + Math.random() * 90000000).toString();
-    const { data: cuentaLoan, error: errLoanAcc } = await supabase
-      .from('accounts')
-      .insert({
-        user_id: req.userId,
-        account_number: numCuenta,
-        type: 'LOAN',
-        label: 'Préstamo personal',
-        interest_rate: tasaMensual,
-      })
-      .select('id')
-      .single();
+    const cuentaLoanRes = await query<{ id: string }>(
+      `INSERT INTO accounts (user_id, account_number, type, label, interest_rate) 
+       VALUES ($1, $2, 'LOAN', 'Préstamo personal', $3) 
+       RETURNING id;`,
+      [req.userId, numCuenta, tasaMensual]
+    );
 
-    if (errLoanAcc) throw errLoanAcc;
+    const cuentaLoanId = cuentaLoanRes.rows[0]?.id;
+    if (!cuentaLoanId) throw new Error('Error al crear la cuenta del préstamo');
 
     // 4. Crear transaccion y asientos contables (ledger entries)
     const idemKey = `loan-disburse-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-    const { data: tx, error: errTx } = await supabase
-      .from('transactions')
-      .insert({
-        type: 'LOAN_DISBURSEMENT',
-        status: 'POSTED',
-        description: `Desembolso de préstamo a ${p} meses`,
-        idempotency_key: idemKey,
-      })
-      .select('id')
-      .single();
+    const txRes = await query<{ id: string }>(
+      `INSERT INTO transactions (type, status, description, idempotency_key) 
+       VALUES ('LOAN_DISBURSEMENT', 'POSTED', $1, $2) 
+       RETURNING id;`,
+      [`Desembolso de préstamo a ${p} meses`, idemKey]
+    );
 
-    if (errTx) throw errTx;
+    const txId = txRes.rows[0]?.id;
+    if (!txId) throw new Error('Error al registrar la transacción de desembolso');
 
-    await supabase.from('ledger_entries').insert([
-      { transaction_id: tx.id, account_id: cuentaLoan.id, amount: -m },
-      { transaction_id: tx.id, account_id: cuentaId, amount: m },
-    ]);
+    await query(
+      `INSERT INTO ledger_entries (transaction_id, account_id, amount) VALUES 
+       ($1, $2, $3), 
+       ($1, $4, $5);`,
+      [txId, cuentaLoanId, -m, cuentaId, m]
+    );
 
     // 5. Crear objeto loan
-    const { data: loanObj, error: errLoan } = await supabase
-      .from('loans')
-      .insert({
-        account_id: cuentaLoan.id,
-        application_id: app.id,
-        principal: m,
-        rate_monthly: tasaMensual,
-        term_months: p,
-        installment: cuotaMensual,
-        status: 'ACTIVE',
-      })
-      .select('id')
-      .single();
+    const loanRes = await query<{ id: string }>(
+      `INSERT INTO loans (account_id, application_id, principal, rate_monthly, term_months, installment, status) 
+       VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE') 
+       RETURNING id;`,
+      [cuentaLoanId, appId, m, tasaMensual, p, cuotaMensual]
+    );
 
-    if (errLoan) throw errLoan;
+    const loanId = loanRes.rows[0]?.id;
+    if (!loanId) throw new Error('Error al crear el registro del préstamo');
 
     // 6. Generar cuotas en installments
     let saldo = m;
-    const cuotasInsert = [];
     const hoy = new Date();
 
     for (let i = 1; i <= p; i++) {
@@ -222,30 +201,30 @@ router.post('/solicitar', requireAuth, async (req, res, next) => {
       saldo = Math.max(0, saldo - abonoCapital);
       const fechaVenc = new Date(hoy.getFullYear(), hoy.getMonth() + i, hoy.getDate());
 
-      cuotasInsert.push({
-        loan_id: loanObj.id,
-        number: i,
-        due_date: fechaVenc.toISOString().split('T')[0],
-        amount: Math.round(cuotaMensual),
-        principal_part: Math.round(abonoCapital),
-        interest_part: Math.round(interes),
-        status: 'PENDING',
-      });
+      await query(
+        `INSERT INTO installments (loan_id, number, due_date, amount, principal_part, interest_part, status) 
+         VALUES ($1, $2, $3, $4, $5, $6, 'PENDING');`,
+        [
+          loanId,
+          i,
+          fechaVenc.toISOString().split('T')[0],
+          Math.round(cuotaMensual),
+          Math.round(abonoCapital),
+          Math.round(interes),
+        ]
+      );
     }
 
-    await supabase.from('installments').insert(cuotasInsert);
-
     // 7. Notificación
-    await supabase.from('notifications').insert({
-      user_id: req.userId,
-      title: '¡Préstamo Desembolsado!',
-      body: `Se ha abonado $${m.toLocaleString('es-CO')} a tu cuenta.`,
-    });
+    await query(
+      `INSERT INTO notifications (user_id, title, body) VALUES ($1, '¡Préstamo Desembolsado!', $2);`,
+      [req.userId, `Se ha abonado $${m.toLocaleString('es-CO')} a tu cuenta.`]
+    );
 
     res.json({
       ok: true,
       mensaje: `¡Préstamo de $${m.toLocaleString('es-CO')} aprobado y abonado a tu cuenta!`,
-      prestamoId: loanObj.id,
+      prestamoId: loanId,
     });
   } catch (e) {
     next(e);

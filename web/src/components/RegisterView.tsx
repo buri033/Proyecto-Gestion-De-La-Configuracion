@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { supabase } from '../lib/supabase';
+import { api } from '../lib/api';
 import { ShieldCheck, UserPlus, Lock, Mail, User, ArrowLeft, Wallet } from 'lucide-react';
 
 interface RegisterViewProps {
@@ -20,27 +20,23 @@ export const RegisterView: React.FC<RegisterViewProps> = ({ onSwitchToLogin }) =
     setLoading(true);
     setError(null);
 
-    const { error: err } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: {
-          full_name: fullName,
-          account_type: accountType,
-        },
-      },
-    });
-
-    if (err) {
+    try {
+      await api.register({
+        email,
+        password,
+        full_name: fullName,
+        account_type: accountType,
+      });
+      setSuccess(true);
+    } catch (err: any) {
       if (err.message.includes('fetch') || err.message.includes('Failed')) {
-        setError('No se pudo conectar con Supabase. Revisa que VITE_SUPABASE_URL en web/.env sea la URL real de tu proyecto en supabase.com');
+        setError('No se pudo conectar con el servidor API local. Revisa que el backend (api) esté corriendo en http://localhost:3000');
       } else {
         setError(err.message);
       }
-    } else {
-      setSuccess(true);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   return (

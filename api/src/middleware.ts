@@ -1,7 +1,9 @@
 import type { NextFunction, Request, Response } from 'express';
-import { supabase } from './repos/supabase';
+import jwt from 'jsonwebtoken';
+import 'dotenv/config';
 
-/** Extiende el Request de Express para que TypeScript conozca userId. */
+export const JWT_SECRET = process.env['JWT_SECRET'] ?? 'banco-mvp-secret-key-local-2026';
+
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace Express {
@@ -23,14 +25,15 @@ export async function requireAuth(
     return;
   }
 
-  // Usar el cliente admin supabase con service_role_key para verificar tokens de manera 100% confiable
-  const { data, error } = await supabase.auth.getUser(token);
-
-  if (error || !data.user) {
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET) as { userId: string; email?: string };
+    if (!decoded.userId) {
+      res.status(401).json({ error: 'Tu sesión expiró. Vuelve a entrar' });
+      return;
+    }
+    req.userId = decoded.userId;
+    next();
+  } catch (_err) {
     res.status(401).json({ error: 'Tu sesión expiró. Vuelve a entrar' });
-    return;
   }
-
-  req.userId = data.user.id;
-  next();
 }

@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { supabase } from './lib/supabase';
+import { useEffect, useState } from 'react';
+import { auth, Session } from './lib/auth';
 import { api, CuentaConSaldo, Movimiento, Tarjeta, Notificacion } from './lib/api';
 
 import { Navbar } from './components/Navbar';
@@ -18,7 +18,7 @@ import { CajitasView } from './components/CajitasView';
 import { NotificacionesView } from './components/NotificacionesView';
 
 export function App() {
-  const [session, setSession] = useState<any>(null);
+  const [session, setSession] = useState<Session | null>(auth.getSession());
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [activeView, setActiveView] = useState<string>('dashboard');
 
@@ -26,20 +26,14 @@ export function App() {
   const [movimientos, setMovimientos] = useState<Movimiento[]>([]);
   const [tarjetas, setTarjetas] = useState<Tarjeta[]>([]);
   const [notificaciones, setNotificaciones] = useState<Notificacion[]>([]);
-  const [loadingData, setLoadingData] = useState(false);
+  const [_loadingData, setLoadingData] = useState(false);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
+    const sub = auth.onAuthStateChange((s) => {
+      setSession(s);
     });
 
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-    });
-
-    return () => subscription.unsubscribe();
+    return () => sub.unsubscribe();
   }, []);
 
   const cargarDatos = async () => {
@@ -81,7 +75,7 @@ export function App() {
   }
 
   const unreadNotifications = notificaciones.filter((n) => !n.read_at).length;
-  const userName = session.user.user_metadata?.full_name ?? session.user.email?.split('@')[0] ?? 'Usuario';
+  const userName = session.user.full_name ?? session.user.email.split('@')[0] ?? 'Usuario';
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-main)' }}>

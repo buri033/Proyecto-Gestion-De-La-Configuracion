@@ -1,18 +1,16 @@
 import { Router } from 'express';
-import { supabase } from '../repos/supabase';
+import { query } from '../repos/db';
 import { requireAuth } from '../middleware';
 
 const router = Router();
 
 /** Helper para asegurar que el perfil exista en profiles */
 export async function asegurarPerfil(userId: string) {
-  const docId = 'DOC-' + userId.replace(/-/g, '');
-  await supabase
-    .from('profiles')
-    .upsert(
-      { id: userId, full_name: 'Usuario', document_id: docId },
-      { onConflict: 'id', ignoreDuplicates: true }
-    );
+  const docId = 'DOC-' + userId.replace(/-/g, '').substring(0, 10);
+  await query(
+    `INSERT INTO profiles (id, full_name, document_id) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING;`,
+    [userId, 'Usuario', docId]
+  );
 }
 
 /** Mis cuentas con su saldo calculado por la vista account_balances. */
@@ -27,53 +25,48 @@ router.get('/me', requireAuth, async (req, res, next) => {
     await asegurarPerfil(req.userId);
 
     // 2. Obtener cuentas del usuario
-    let { data, error } = await supabase
-      .from('account_balances')
-      .select('*')
-      .eq('user_id', req.userId);
+    let accountsRes = await query(
+      `SELECT * FROM account_balances WHERE user_id = $1;`,
+      [req.userId]
+    );
 
-    if (error) throw error;
+    let data = accountsRes.rows;
 
     // 3. Auto-crear cuenta de ahorros si el usuario no tiene ninguna cuenta activa
     if (!data || data.length === 0) {
       const numCuenta = Math.floor(1000000000 + Math.random() * 9000000000).toString();
-      const { data: cuentaNueva, error: errCuenta } = await supabase
-        .from('accounts')
-        .insert({
-          user_id: req.userId,
-          account_number: numCuenta,
-          type: 'SAVINGS',
-          label: 'Cuenta de ahorros principal',
-        })
-        .select()
-        .single();
+      const nuevaCuentaRes = await query<{ id: string }>(
+        `INSERT INTO accounts (user_id, account_number, type, label) VALUES ($1, $2, 'SAVINGS', 'Cuenta de ahorros principal') RETURNING id;`,
+        [req.userId, numCuenta]
+      );
 
-      if (!errCuenta && cuentaNueva) {
+      const cuentaNueva = nuevaCuentaRes.rows[0];
+      if (cuentaNueva) {
         // Emitir tarjeta de debito por defecto
         const now = new Date();
-        await supabase.from('cards').insert({
-          account_id: cuentaNueva.id,
-          card_type: 'DEBIT',
-          is_virtual: true,
-          last4: String(Math.floor(1000 + Math.random() * 9000)),
-          exp_month: now.getMonth() + 1,
-          exp_year: now.getFullYear() + 5,
-        });
+        await query(
+          `INSERT INTO cards (account_id, card_type, is_virtual, last4, exp_month, exp_year) VALUES ($1, 'DEBIT', true, $2, $3, $4);`,
+          [
+            cuentaNueva.id,
+            String(Math.floor(1000 + Math.random() * 9000)),
+            now.getMonth() + 1,
+            now.getFullYear() + 5,
+          ]
+        );
 
         // Crear notificacion de bienvenida
-        await supabase.from('notifications').insert({
-          user_id: req.userId,
-          title: 'Bienvenido a Banco MVP',
-          body: 'Tu cuenta de ahorros principal ha sido creada.',
-        });
+        await query(
+          `INSERT INTO notifications (user_id, title, body) VALUES ($1, 'Bienvenido a Banco MVP', 'Tu cuenta de ahorros principal ha sido creada.');`,
+          [req.userId]
+        );
       }
 
       // Re-consultar saldos
-      const resBal = await supabase
-        .from('account_balances')
-        .select('*')
-        .eq('user_id', req.userId);
-      data = resBal.data;
+      const resBal = await query(
+        `SELECT * FROM account_balances WHERE user_id = $1;`,
+        [req.userId]
+      );
+      data = resBal.rows;
     }
 
     res.json(data ?? []);
@@ -85,15 +78,17 @@ router.get('/me', requireAuth, async (req, res, next) => {
 /** Los movimientos de una cuenta, del mas reciente al mas antiguo. */
 router.get('/:id/movimientos', requireAuth, async (req, res, next) => {
   try {
-    const { data, error } = await supabase
-      .from('ledger_entries')
-      .select('id, amount, created_at, transactions(type, description, status)')
-      .eq('account_id', req.params.id)
-      .order('created_at', { ascending: false })
-      .limit(50);
+    const resMovs = await query(
+      `SELECT le.id, le.amount, le.created_at, json_build_object('type', t.type, 'description', t.description, 'status', t.status) as transactions
+       FROM ledger_entries le
+       JOIN transactions t ON t.id = le.transaction_id
+       WHERE le.account_id = $1
+       ORDER BY le.created_at DESC
+       LIMIT 50;`,
+      [req.params.id]
+    );
 
-    if (error) throw error;
-    res.json(data ?? []);
+    res.json(resMovs.rows ?? []);
   } catch (e) {
     next(e);
   }
@@ -102,18 +97,20 @@ router.get('/:id/movimientos', requireAuth, async (req, res, next) => {
 /** Buscar a quien enviarle plata, por numero de cuenta. */
 router.get('/buscar/:numero', requireAuth, async (req, res, next) => {
   try {
-    const { data, error } = await supabase
-      .from('accounts')
-      .select('id, account_number, profiles(full_name)')
-      .eq('account_number', req.params.numero)
-      .in('type', ['CHECKING', 'SAVINGS'])
-      .single();
+    const resAccount = await query(
+      `SELECT a.id, a.account_number, json_build_object('full_name', p.full_name) as profiles
+       FROM accounts a
+       LEFT JOIN profiles p ON p.id = a.user_id
+       WHERE a.account_number = $1 AND a.type IN ('CHECKING', 'SAVINGS')
+       LIMIT 1;`,
+      [req.params.numero]
+    );
 
-    if (error || !data) {
+    if (resAccount.rows.length === 0) {
       res.status(404).json({ error: 'No encontramos esa cuenta' });
       return;
     }
-    res.json(data);
+    res.json(resAccount.rows[0]);
   } catch (e) {
     next(e);
   }

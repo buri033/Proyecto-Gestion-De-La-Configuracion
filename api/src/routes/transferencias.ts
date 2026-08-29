@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { randomUUID } from 'node:crypto';
-import { supabase } from '../repos/supabase';
+import { query } from '../repos/db';
 import { requireAuth } from '../middleware';
 
 const router = Router();
@@ -24,17 +24,19 @@ router.post('/', requireAuth, async (req, res, next) => {
       return;
     }
 
-    const { data, error } = await supabase.rpc('transfer_money', {
-      p_from_account: origen,
-      p_to_account: destino,
-      p_amount: monto,
-      p_description: descripcion ?? 'Transferencia entre cuentas',
-      p_idem_key: claveIdempotencia ?? randomUUID(),
-      p_type: 'TRANSFER',
-    });
+    const resRpc = await query<{ transfer_money: string }>(
+      `SELECT transfer_money($1, $2, $3, $4, $5, $6);`,
+      [
+        origen,
+        destino,
+        monto,
+        descripcion ?? 'Transferencia entre cuentas',
+        claveIdempotencia ?? randomUUID(),
+        'TRANSFER',
+      ]
+    );
 
-    if (error) throw error;
-    res.json({ transaccionId: data });
+    res.json({ transaccionId: resRpc.rows[0]?.transfer_money });
   } catch (e) {
     next(e);
   }
@@ -51,28 +53,29 @@ router.post('/recarga', requireAuth, async (req, res, next) => {
     }
 
     // Buscar la cuenta caja del sistema
-    const { data: caja, error: errCaja } = await supabase
-      .from('accounts')
-      .select('id')
-      .eq('account_number', 'SYS-0000000001')
-      .single();
+    const resCaja = await query<{ id: string }>(
+      `SELECT id FROM accounts WHERE account_number = 'SYS-0000000001' LIMIT 1;`
+    );
 
-    if (errCaja || !caja) {
+    const caja = resCaja.rows[0];
+    if (!caja) {
       res.status(500).json({ error: 'Error interno: Caja del sistema no configurada' });
       return;
     }
 
-    const { data, error } = await supabase.rpc('transfer_money', {
-      p_from_account: caja.id,
-      p_to_account: destino,
-      p_amount: monto,
-      p_description: 'Recarga de dinero',
-      p_idem_key: claveIdempotencia ?? randomUUID(),
-      p_type: 'DEPOSIT',
-    });
+    const resRpc = await query<{ transfer_money: string }>(
+      `SELECT transfer_money($1, $2, $3, $4, $5, $6);`,
+      [
+        caja.id,
+        destino,
+        monto,
+        'Recarga de dinero',
+        claveIdempotencia ?? randomUUID(),
+        'DEPOSIT',
+      ]
+    );
 
-    if (error) throw error;
-    res.json({ transaccionId: data });
+    res.json({ transaccionId: resRpc.rows[0]?.transfer_money });
   } catch (e) {
     next(e);
   }
@@ -88,28 +91,29 @@ router.post('/retiro', requireAuth, async (req, res, next) => {
       return;
     }
 
-    const { data: caja, error: errCaja } = await supabase
-      .from('accounts')
-      .select('id')
-      .eq('account_number', 'SYS-0000000001')
-      .single();
+    const resCaja = await query<{ id: string }>(
+      `SELECT id FROM accounts WHERE account_number = 'SYS-0000000001' LIMIT 1;`
+    );
 
-    if (errCaja || !caja) {
+    const caja = resCaja.rows[0];
+    if (!caja) {
       res.status(500).json({ error: 'Error interno: Caja del sistema no configurada' });
       return;
     }
 
-    const { data, error } = await supabase.rpc('transfer_money', {
-      p_from_account: origen,
-      p_to_account: caja.id,
-      p_amount: monto,
-      p_description: 'Retiro de efectivo',
-      p_idem_key: claveIdempotencia ?? randomUUID(),
-      p_type: 'WITHDRAWAL',
-    });
+    const resRpc = await query<{ transfer_money: string }>(
+      `SELECT transfer_money($1, $2, $3, $4, $5, $6);`,
+      [
+        origen,
+        caja.id,
+        monto,
+        'Retiro de efectivo',
+        claveIdempotencia ?? randomUUID(),
+        'WITHDRAWAL',
+      ]
+    );
 
-    if (error) throw error;
-    res.json({ transaccionId: data });
+    res.json({ transaccionId: resRpc.rows[0]?.transfer_money });
   } catch (e) {
     next(e);
   }

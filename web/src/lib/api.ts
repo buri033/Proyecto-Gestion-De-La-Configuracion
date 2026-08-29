@@ -1,10 +1,9 @@
-import { supabase } from './supabase';
+import { auth, AuthUser } from './auth';
 
 const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const { data } = await supabase.auth.getSession();
-  const token = data.session?.access_token;
+  const token = auth.getToken();
 
   const res = await fetch(`${BASE_URL}${path}`, {
     ...options,
@@ -112,6 +111,36 @@ export interface ResultadoSimulacion {
 // ─── API Client Methods ──────────────────────────────────────────────────────
 
 export const api = {
+  // Autenticación Local
+  login: async (email: string, password: string): Promise<AuthUser> => {
+    const res = await request<{ token: string; user: AuthUser }>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    });
+    auth.setSession(res.token, res.user);
+    return res.user;
+  },
+
+  register: async (payload: {
+    email: string;
+    password: string;
+    full_name: string;
+    account_type?: 'SAVINGS' | 'CHECKING';
+  }): Promise<AuthUser> => {
+    const res = await request<{ token: string; user: AuthUser }>('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    auth.setSession(res.token, res.user);
+    return res.user;
+  },
+
+  logout: () => {
+    auth.clearSession();
+  },
+
+  me: () => request<{ user: AuthUser }>('/auth/me'),
+
   // Cuentas
   misCuentas: () => request<CuentaConSaldo[]>('/cuentas/me'),
   movimientos: (cuentaId: string) => request<Movimiento[]>(`/cuentas/${cuentaId}/movimientos`),

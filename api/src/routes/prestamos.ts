@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { supabase } from '../repos/supabase';
+import { query } from '../repos/db';
 import { requireAuth } from '../middleware';
 
 const router = Router();
@@ -8,25 +8,25 @@ const router = Router();
 router.get('/', requireAuth, async (req, res, next) => {
   try {
     // Obtener cuentas LOAN del usuario
-    const { data: cuentas, error: errCuentas } = await supabase
-      .from('accounts')
-      .select('id')
-      .eq('user_id', req.userId)
-      .eq('type', 'LOAN');
+    const cuentasRes = await query<{ id: string }>(
+      `SELECT id FROM accounts WHERE user_id = $1 AND type = 'LOAN';`,
+      [req.userId]
+    );
 
-    if (errCuentas) throw errCuentas;
+    const cuentas = cuentasRes.rows;
     if (!cuentas || cuentas.length === 0) { res.json([]); return; }
 
     const cuentaIds = cuentas.map((c) => c.id);
 
-    const { data, error } = await supabase
-      .from('loans')
-      .select('id, principal, rate_monthly, term_months, installment, status, disbursed_at, account_id')
-      .in('account_id', cuentaIds)
-      .order('disbursed_at', { ascending: false });
+    const loansRes = await query(
+      `SELECT id, principal, rate_monthly, term_months, installment, status, disbursed_at, account_id 
+       FROM loans 
+       WHERE account_id = ANY($1) 
+       ORDER BY disbursed_at DESC;`,
+      [cuentaIds]
+    );
 
-    if (error) throw error;
-    res.json(data ?? []);
+    res.json(loansRes.rows ?? []);
   } catch (e) {
     next(e);
   }
@@ -35,16 +35,16 @@ router.get('/', requireAuth, async (req, res, next) => {
 /** Cuotas de un prestamo — mapea `number` → `installment_number` para el cliente movil. */
 router.get('/:id/cuotas', requireAuth, async (req, res, next) => {
   try {
-    const { data, error } = await supabase
-      .from('installments')
-      .select('id, number, due_date, amount, principal_part, interest_part, status, paid_at')
-      .eq('loan_id', req.params.id)
-      .order('number');
-
-    if (error) throw error;
+    const cuotasRes = await query<Record<string, any>>(
+      `SELECT id, number, due_date, amount, principal_part, interest_part, status, paid_at 
+       FROM installments 
+       WHERE loan_id = $1 
+       ORDER BY number;`,
+      [req.params.id]
+    );
 
     // Renombramos `number` a `installment_number` para mantener consistencia
-    const cuotas = (data ?? []).map((c) => ({
+    const cuotas = (cuotasRes.rows ?? []).map((c) => ({
       ...c,
       installment_number: c.number,
     }));
@@ -58,14 +58,15 @@ router.get('/:id/cuotas', requireAuth, async (req, res, next) => {
 /** Pagar una cuota especifica. */
 router.post('/:prestamoId/cuotas/:cuotaId/pagar', requireAuth, async (req, res, next) => {
   try {
-    const { data: cuota, error: errCuota } = await supabase
-      .from('installments')
-      .select('id, amount, status, loan_id')
-      .eq('id', req.params.cuotaId)
-      .eq('loan_id', req.params.prestamoId)
-      .single();
+    const cuotaRes = await query<{ id: string; status: string; amount: number; loan_id: string }>(
+      `SELECT id, amount, status, loan_id 
+       FROM installments 
+       WHERE id = $1 AND loan_id = $2;`,
+      [req.params.cuotaId, req.params.prestamoId]
+    );
 
-    if (errCuota || !cuota) {
+    const cuota = cuotaRes.rows[0];
+    if (!cuota) {
       res.status(404).json({ error: 'Cuota no encontrada' });
       return;
     }
@@ -74,12 +75,11 @@ router.post('/:prestamoId/cuotas/:cuotaId/pagar', requireAuth, async (req, res, 
       return;
     }
 
-    const { error } = await supabase
-      .from('installments')
-      .update({ status: 'PAID', paid_at: new Date().toISOString() })
-      .eq('id', cuota.id);
+    await query(
+      `UPDATE installments SET status = 'PAID', paid_at = NOW() WHERE id = $1;`,
+      [cuota.id]
+    );
 
-    if (error) throw error;
     res.json({ ok: true });
   } catch (e) {
     next(e);
